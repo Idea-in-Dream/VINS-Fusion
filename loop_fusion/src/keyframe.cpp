@@ -10,7 +10,7 @@
  *******************************************************/
 
 #include "keyframe.h"
-
+// 根据状态剔除部分特征点
 template <typename Derived>
 static void reduceVector(vector<Derived> &v, vector<uchar> status)
 {
@@ -21,6 +21,7 @@ static void reduceVector(vector<Derived> &v, vector<uchar> status)
     v.resize(j);
 }
 
+// 新建关键帧，新建关键帧时，
 // create keyframe online
 KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, cv::Mat &_image,
 		           vector<cv::Point3f> &_point_3d, vector<cv::Point2f> &_point_2d_uv, vector<cv::Point2f> &_point_2d_norm,
@@ -52,6 +53,7 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 }
 
 // load previous keyframe
+// 加载关键帧
 KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
 					cv::Mat &_image, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
 					vector<cv::KeyPoint> &_keypoints, vector<cv::KeyPoint> &_keypoints_norm, vector<BRIEF::bitset> &_brief_descriptors)
@@ -64,11 +66,7 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 	vio_R_w_i = _R_w_i;
 	T_w_i = _T_w_i;
 	R_w_i = _R_w_i;
-	if (DEBUG_IMAGE)
-	{
-		image = _image.clone();
-		cv::resize(image, thumbnail, cv::Size(80, 60));
-	}
+
 	if (_loop_index != -1)
 		has_loop = true;
 	else
@@ -83,6 +81,7 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 }
 
 
+// 提取滑动窗口内特征点的BRIEF描述子
 void KeyFrame::computeWindowBRIEFPoint()
 {
 	BriefExtractor extractor(BRIEF_PATTERN_FILE.c_str());
@@ -95,6 +94,7 @@ void KeyFrame::computeWindowBRIEFPoint()
 	extractor(image, window_keypoints, window_brief_descriptors);
 }
 
+// 提取fast特征及BRIEF描述子
 void KeyFrame::computeBRIEFPoint()
 {
 	BriefExtractor extractor(BRIEF_PATTERN_FILE.c_str());
@@ -113,6 +113,8 @@ void KeyFrame::computeBRIEFPoint()
 		}
 	}
 	extractor(image, keypoints, brief_descriptors);
+
+	// 计算归一化平面上的特征点坐标
 	for (int i = 0; i < (int)keypoints.size(); i++)
 	{
 		Eigen::Vector3d tmp_p;
@@ -123,12 +125,14 @@ void KeyFrame::computeBRIEFPoint()
 	}
 }
 
+// 从给定的关键帧中提取BRIEF描述子
 void BriefExtractor::operator() (const cv::Mat &im, vector<cv::KeyPoint> &keys, vector<BRIEF::bitset> &descriptors) const
 {
   m_brief.compute(im, keys, descriptors);
 }
 
 
+// 在一组在一组特征描述符中寻找与给定描述符最匹配的一个
 bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
                             const std::vector<BRIEF::bitset> &descriptors_old,
                             const std::vector<cv::KeyPoint> &keypoints_old,
@@ -139,17 +143,20 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
     cv::Point2f best_pt;
     int bestDist = 128;
     int bestIndex = -1;
+	// 遍历所有旧的描述符
     for(int i = 0; i < (int)descriptors_old.size(); i++)
     {
-
+		// 计算它们与目标描述符 window_descriptor 的汉明距离。
         int dis = HammingDis(window_descriptor, descriptors_old[i]);
+		// 找到最小距离的描述符
         if(dis < bestDist)
         {
             bestDist = dis;
             bestIndex = i;
         }
     }
-    //printf("best dist %d", bestDist);
+
+    // 如果距离小于阈值80，则认为找到了匹配
     if (bestIndex != -1 && bestDist < 80)
     {
       best_match = keypoints_old[bestIndex].pt;
@@ -160,6 +167,7 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
       return false;
 }
 
+// 批量执行特征匹配，将当前帧的特征点与上一帧特征点进行匹配
 void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
 								std::vector<cv::Point2f> &matched_2d_old_norm,
                                 std::vector<uchar> &status,
@@ -171,6 +179,8 @@ void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
     {
         cv::Point2f pt(0.f, 0.f);
         cv::Point2f pt_norm(0.f, 0.f);
+		// 遍历当前帧的特征描述符 window_brief_descriptors,调用 searchInAera 查找匹配点，
+		// 并将匹配结果存储在 matched_2d_old 和 matched_2d_old_norm 中，同时记录匹配状态 status
         if (searchInAera(window_brief_descriptors[i], descriptors_old, keypoints_old, keypoints_old_norm, pt, pt_norm))
           status.push_back(1);
         else
@@ -181,16 +191,19 @@ void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
 
 }
 
-
+// 利用RANSAC对匹配点进行几何一致性验证，估计基本矩阵
 void KeyFrame::FundmantalMatrixRANSAC(const std::vector<cv::Point2f> &matched_2d_cur_norm,
                                       const std::vector<cv::Point2f> &matched_2d_old_norm,
                                       vector<uchar> &status)
 {
 	int n = (int)matched_2d_cur_norm.size();
+	// 状态全部置为0
 	for (int i = 0; i < n; i++)
 		status.push_back(0);
+
     if (n >= 8)
-    {
+    {	
+		// 将当前帧和上一帧的归一化坐标转换为像素坐标
         vector<cv::Point2f> tmp_cur(n), tmp_old(n);
         for (int i = 0; i < (int)matched_2d_cur_norm.size(); i++)
         {
@@ -204,28 +217,35 @@ void KeyFrame::FundmantalMatrixRANSAC(const std::vector<cv::Point2f> &matched_2d
             tmp_y = FOCAL_LENGTH * matched_2d_old_norm[i].y + ROW / 2.0;
             tmp_old[i] = cv::Point2f(tmp_x, tmp_y);
         }
+		// 使用 cv::findFundamentalMat 函数进行RANSAC，过滤掉不符合几何一致性的匹配点
         cv::findFundamentalMat(tmp_cur, tmp_old, cv::FM_RANSAC, 3.0, 0.9, status);
     }
 }
 
+// 利用PnP（Perspective-n-Point）方法估计关键帧之间的相对位姿
 void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
                          const std::vector<cv::Point3f> &matched_3d,
                          std::vector<uchar> &status,
                          Eigen::Vector3d &PnP_T_old, Eigen::Matrix3d &PnP_R_old)
 {
-	//for (int i = 0; i < matched_3d.size(); i++)
-	//	printf("3d x: %f, y: %f, z: %f\n",matched_3d[i].x, matched_3d[i].y, matched_3d[i].z );
-	//printf("match size %d \n", matched_3d.size());
+	// rvec 和 t：PnP求解的旋转向量和平移向量
     cv::Mat r, rvec, t, D, tmp_r;
+	// K：相机内参矩阵 D：畸变参数，这里为空（归一化坐标无需畸变校正）
     cv::Mat K = (cv::Mat_<double>(3, 3) << 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0);
+	// 初始位姿计算
+	// origin_vio_R 和 origin_vio_T：初始位姿;
+	// qic 和 tic：IMU到相机的外参（旋转矩阵和平移向量）
     Matrix3d R_inital;
     Vector3d P_inital;
+	// 计算相机在世界坐标系下的旋转 R_w_c 和平移 T_w_c
     Matrix3d R_w_c = origin_vio_R * qic;
     Vector3d T_w_c = origin_vio_T + origin_vio_R * tic;
 
+	// 将位姿反转为参考关键帧相对当前帧的初始位姿
     R_inital = R_w_c.inverse();
     P_inital = -(R_inital * T_w_c);
 
+	//  位姿初始化到OpenCV格式
     cv::eigen2cv(R_inital, tmp_r);
     cv::Rodrigues(tmp_r, rvec);
     cv::eigen2cv(P_inital, t);
@@ -233,6 +253,7 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
     cv::Mat inliers;
     TicToc t_pnp_ransac;
 
+	// PnP求解
     if (CV_MAJOR_VERSION < 3)
         solvePnPRansac(matched_3d, matched_2d_old_norm, K, D, rvec, t, true, 100, 10.0 / 460.0, 100, inliers);
     else
@@ -243,7 +264,7 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
             solvePnPRansac(matched_3d, matched_2d_old_norm, K, D, rvec, t, true, 100, 10.0 / 460.0, 0.99, inliers);
 
     }
-
+	// 匹配状态更新
     for (int i = 0; i < (int)matched_2d_old_norm.size(); i++)
         status.push_back(0);
 
@@ -253,6 +274,7 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
         status[n] = 1;
     }
 
+	// 将PnP求解结果的旋转向量 rvec 转换为旋转矩阵 r，并转换为Eigen格式 R_pnp
     cv::Rodrigues(rvec, r);
     Matrix3d R_pnp, R_w_c_old;
     cv::cv2eigen(r, R_pnp);
@@ -260,13 +282,14 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
     Vector3d T_pnp, T_w_c_old;
     cv::cv2eigen(t, T_pnp);
     T_w_c_old = R_w_c_old * (-T_pnp);
-
+	
+	// 将位姿转换到IMU坐标系下
     PnP_R_old = R_w_c_old * qic.transpose();
     PnP_T_old = T_w_c_old - PnP_R_old * tic;
 
 }
 
-
+// 检测当前关键帧与某一历史关键帧之间是否存在闭环连接
 bool KeyFrame::findConnection(KeyFrame* old_kf)
 {
 	TicToc tmp_t;
@@ -283,32 +306,9 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	matched_id = point_id;
 
 	TicToc t_match;
-	#if 0
-		if (DEBUG_IMAGE)    
-	    {
-	        cv::Mat gray_img, loop_match_img;
-	        cv::Mat old_img = old_kf->image;
-	        cv::hconcat(image, old_img, gray_img);
-	        cvtColor(gray_img, loop_match_img, CV_GRAY2RGB);
-	        for(int i = 0; i< (int)point_2d_uv.size(); i++)
-	        {
-	            cv::Point2f cur_pt = point_2d_uv[i];
-	            cv::circle(loop_match_img, cur_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        for(int i = 0; i< (int)old_kf->keypoints.size(); i++)
-	        {
-	            cv::Point2f old_pt = old_kf->keypoints[i].pt;
-	            old_pt.x += COL;
-	            cv::circle(loop_match_img, old_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        ostringstream path;
-	        path << "/home/tony-ws1/raw_data/loop_image/"
-	                << index << "-"
-	                << old_kf->index << "-" << "0raw_point.jpg";
-	        cv::imwrite( path.str().c_str(), loop_match_img);
-	    }
-	#endif
+
 	//printf("search by des\n");
+	// 通过 searchByBRIEFDes 查找当前帧与旧帧之间的特征匹配
 	searchByBRIEFDes(matched_2d_old, matched_2d_old_norm, status, old_kf->brief_descriptors, old_kf->keypoints, old_kf->keypoints_norm);
 	reduceVector(matched_2d_cur, status);
 	reduceVector(matched_2d_old, status);
@@ -318,52 +318,6 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	reduceVector(matched_id, status);
 	//printf("search by des finish\n");
 
-	#if 0 
-		if (DEBUG_IMAGE)
-	    {
-			int gap = 10;
-        	cv::Mat gap_image(ROW, gap, CV_8UC1, cv::Scalar(255, 255, 255));
-            cv::Mat gray_img, loop_match_img;
-            cv::Mat old_img = old_kf->image;
-            cv::hconcat(image, gap_image, gap_image);
-            cv::hconcat(gap_image, old_img, gray_img);
-            cvtColor(gray_img, loop_match_img, CV_GRAY2RGB);
-	        for(int i = 0; i< (int)matched_2d_cur.size(); i++)
-	        {
-	            cv::Point2f cur_pt = matched_2d_cur[i];
-	            cv::circle(loop_match_img, cur_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        for(int i = 0; i< (int)matched_2d_old.size(); i++)
-	        {
-	            cv::Point2f old_pt = matched_2d_old[i];
-	            old_pt.x += (COL + gap);
-	            cv::circle(loop_match_img, old_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        for (int i = 0; i< (int)matched_2d_cur.size(); i++)
-	        {
-	            cv::Point2f old_pt = matched_2d_old[i];
-	            old_pt.x +=  (COL + gap);
-	            cv::line(loop_match_img, matched_2d_cur[i], old_pt, cv::Scalar(0, 255, 0), 1, 8, 0);
-	        }
-
-	        ostringstream path, path1, path2;
-	        path <<  "/home/tony-ws1/raw_data/loop_image/"
-	                << index << "-"
-	                << old_kf->index << "-" << "1descriptor_match.jpg";
-	        cv::imwrite( path.str().c_str(), loop_match_img);
-	        /*
-	        path1 <<  "/home/tony-ws1/raw_data/loop_image/"
-	                << index << "-"
-	                << old_kf->index << "-" << "1descriptor_match_1.jpg";
-	        cv::imwrite( path1.str().c_str(), image);
-	        path2 <<  "/home/tony-ws1/raw_data/loop_image/"
-	                << index << "-"
-	                << old_kf->index << "-" << "1descriptor_match_2.jpg";
-	        cv::imwrite( path2.str().c_str(), old_img);	        
-	        */
-	        
-	    }
-	#endif
 	status.clear();
 	/*
 	FundmantalMatrixRANSAC(matched_2d_cur_norm, matched_2d_old_norm, status);
@@ -374,46 +328,13 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	reduceVector(matched_3d, status);
 	reduceVector(matched_id, status);
 	*/
-	#if 0
-		if (DEBUG_IMAGE)
-	    {
-			int gap = 10;
-        	cv::Mat gap_image(ROW, gap, CV_8UC1, cv::Scalar(255, 255, 255));
-            cv::Mat gray_img, loop_match_img;
-            cv::Mat old_img = old_kf->image;
-            cv::hconcat(image, gap_image, gap_image);
-            cv::hconcat(gap_image, old_img, gray_img);
-            cvtColor(gray_img, loop_match_img, CV_GRAY2RGB);
-	        for(int i = 0; i< (int)matched_2d_cur.size(); i++)
-	        {
-	            cv::Point2f cur_pt = matched_2d_cur[i];
-	            cv::circle(loop_match_img, cur_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        for(int i = 0; i< (int)matched_2d_old.size(); i++)
-	        {
-	            cv::Point2f old_pt = matched_2d_old[i];
-	            old_pt.x += (COL + gap);
-	            cv::circle(loop_match_img, old_pt, 5, cv::Scalar(0, 255, 0));
-	        }
-	        for (int i = 0; i< (int)matched_2d_cur.size(); i++)
-	        {
-	            cv::Point2f old_pt = matched_2d_old[i];
-	            old_pt.x +=  (COL + gap) ;
-	            cv::line(loop_match_img, matched_2d_cur[i], old_pt, cv::Scalar(0, 255, 0), 1, 8, 0);
-	        }
 
-	        ostringstream path;
-	        path <<  "/home/tony-ws1/raw_data/loop_image/"
-	                << index << "-"
-	                << old_kf->index << "-" << "2fundamental_match.jpg";
-	        cv::imwrite( path.str().c_str(), loop_match_img);
-	    }
-	#endif
 	Eigen::Vector3d PnP_T_old;
 	Eigen::Matrix3d PnP_R_old;
 	Eigen::Vector3d relative_t;
 	Quaterniond relative_q;
 	double relative_yaw;
+	// 使用 PnPRANSAC 估计两帧之间的相对位姿
 	if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
 	{
 		status.clear();
@@ -424,62 +345,8 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	    reduceVector(matched_2d_old_norm, status);
 	    reduceVector(matched_3d, status);
 	    reduceVector(matched_id, status);
-	    #if 1
-	    	if (DEBUG_IMAGE)
-	        {
-	        	int gap = 10;
-	        	cv::Mat gap_image(ROW, gap, CV_8UC1, cv::Scalar(255, 255, 255));
-	            cv::Mat gray_img, loop_match_img;
-	            cv::Mat old_img = old_kf->image;
-	            cv::hconcat(image, gap_image, gap_image);
-	            cv::hconcat(gap_image, old_img, gray_img);
-	            cvtColor(gray_img, loop_match_img, CV_GRAY2RGB);
-	            for(int i = 0; i< (int)matched_2d_cur.size(); i++)
-	            {
-	                cv::Point2f cur_pt = matched_2d_cur[i];
-	                cv::circle(loop_match_img, cur_pt, 5, cv::Scalar(0, 255, 0));
-	            }
-	            for(int i = 0; i< (int)matched_2d_old.size(); i++)
-	            {
-	                cv::Point2f old_pt = matched_2d_old[i];
-	                old_pt.x += (COL + gap);
-	                cv::circle(loop_match_img, old_pt, 5, cv::Scalar(0, 255, 0));
-	            }
-	            for (int i = 0; i< (int)matched_2d_cur.size(); i++)
-	            {
-	                cv::Point2f old_pt = matched_2d_old[i];
-	                old_pt.x += (COL + gap) ;
-	                cv::line(loop_match_img, matched_2d_cur[i], old_pt, cv::Scalar(0, 255, 0), 2, 8, 0);
-	            }
-	            cv::Mat notation(50, COL + gap + COL, CV_8UC3, cv::Scalar(255, 255, 255));
-	            putText(notation, "current frame: " + to_string(index) + "  sequence: " + to_string(sequence), cv::Point2f(20, 30), CV_FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255), 3);
-
-	            putText(notation, "previous frame: " + to_string(old_kf->index) + "  sequence: " + to_string(old_kf->sequence), cv::Point2f(20 + COL + gap, 30), CV_FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255), 3);
-	            cv::vconcat(notation, loop_match_img, loop_match_img);
-
-	            /*
-	            ostringstream path;
-	            path <<  "/home/tony-ws1/raw_data/loop_image/"
-	                    << index << "-"
-	                    << old_kf->index << "-" << "3pnp_match.jpg";
-	            cv::imwrite( path.str().c_str(), loop_match_img);
-	            */
-	            if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
-	            {
-	            	/*
-	            	cv::imshow("loop connection",loop_match_img);  
-	            	cv::waitKey(10);  
-	            	*/
-	            	cv::Mat thumbimage;
-	            	cv::resize(loop_match_img, thumbimage, cv::Size(loop_match_img.cols / 2, loop_match_img.rows / 2));
-	    	    	sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", thumbimage).toImageMsg();
-	                msg->header.stamp = ros::Time(time_stamp);
-	    	    	pub_match_img.publish(msg);
-	            }
-	        }
-	    #endif
 	}
-
+	// 如果满足一定的闭环条件（如相对位姿的旋转和平移均小于阈值），标记为闭环连接，并保存相对位姿信息。
 	if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
 	{
 	    relative_t = PnP_R_old.transpose() * (origin_vio_T - PnP_T_old);
@@ -505,7 +372,7 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	return false;
 }
 
-
+// 计算两个BRIEF描述符之间的汉明距离
 int KeyFrame::HammingDis(const BRIEF::bitset &a, const BRIEF::bitset &b)
 {
     BRIEF::bitset xor_of_bitset = a ^ b;
